@@ -91,8 +91,9 @@ public class AddFlowsCommand extends AbstractShellCommand {
         boolean isSuccess = true;
         for (int i = 0; i < num; i++) {
             long startTime = System.currentTimeMillis();
+            //TODO: change to new api
             Future<CompletedBatchOperation> op = flowService.applyBatch(
-                    new FlowRuleBatchOperation(rules));
+                    new FlowRuleBatchOperation(rules, null, 0));
             try {
                 isSuccess &= op.get().isSuccess();
             } catch (InterruptedException | ExecutionException e) {
@@ -100,8 +101,9 @@ public class AddFlowsCommand extends AbstractShellCommand {
             }
             long endTime = System.currentTimeMillis();
             results.add(endTime - startTime);
+            //TODO: change to new api
             flowService.applyBatch(
-                    new FlowRuleBatchOperation(remove));
+                    new FlowRuleBatchOperation(remove, null, 0));
         }
         if (outputJson()) {
             print("%s", json(new ObjectMapper(), isSuccess, results));

@@ -119,7 +119,7 @@ public final class DefaultGroupBucket implements GroupBucket {
      *
      * @param treatment traffic treatment associated with group bucket
      * @param watchPort port that determines the liveness of group bucket
-     * @param watchPort group that determines the liveness of group bucket
+     * @param watchGroup group that determines the liveness of group bucket
      *
      * @return failover group bucket object
      */

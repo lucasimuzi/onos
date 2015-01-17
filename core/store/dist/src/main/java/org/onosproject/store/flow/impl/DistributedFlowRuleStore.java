@@ -15,33 +15,19 @@
  */
 package org.onosproject.store.flow.impl;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static org.onlab.util.Tools.namedThreads;
-import static org.onosproject.net.flow.FlowRuleEvent.Type.RULE_REMOVED;
-import static org.onosproject.store.flow.impl.FlowStoreMessageSubjects.APPLY_BATCH_FLOWS;
-import static org.onosproject.store.flow.impl.FlowStoreMessageSubjects.GET_DEVICE_FLOW_ENTRIES;
-import static org.onosproject.store.flow.impl.FlowStoreMessageSubjects.GET_FLOW_ENTRY;
-import static org.onosproject.store.flow.impl.FlowStoreMessageSubjects.REMOVE_FLOW_ENTRY;
-import static org.slf4j.LoggerFactory.getLogger;
-
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map.Entry;
-import java.util.Set;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Multimap;
+import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.hazelcast.core.IMap;
 import org.apache.felix.scr.annotations.Activate;
 import org.apache.felix.scr.annotations.Component;
 import org.apache.felix.scr.annotations.Deactivate;
@@ -85,21 +71,31 @@ import org.onosproject.store.serializers.StoreSerializer;
 import org.onosproject.store.serializers.impl.DistributedStoreSerializers;
 import org.slf4j.Logger;
 
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.cache.RemovalListener;
-import com.google.common.cache.RemovalNotification;
-import com.google.common.collect.ArrayListMultimap;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Multimap;
-import com.google.common.util.concurrent.Futures;
-import com.google.common.util.concurrent.ListenableFuture;
-import com.google.common.util.concurrent.SettableFuture;
-import com.hazelcast.core.IMap;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.stream.Collectors;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+import static org.onlab.util.Tools.namedThreads;
+import static org.onosproject.net.flow.FlowRuleEvent.Type.RULE_REMOVED;
+import static org.onosproject.store.flow.impl.FlowStoreMessageSubjects.*;
+import static org.slf4j.LoggerFactory.getLogger;
 
 /**
  * Manages inventory of flow rules using a distributed state management protocol.
@@ -131,15 +127,7 @@ public class DistributedFlowRuleStore
     @Reference(cardinality = ReferenceCardinality.MANDATORY_UNARY)
     protected DeviceService deviceService;
 
-    private final AtomicInteger localBatchIdGen = new AtomicInteger();
-
-    private int pendingFutureTimeoutMinutes = 5;
-
-    private Cache<Integer, SettableFuture<CompletedBatchOperation>> pendingFutures =
-            CacheBuilder.newBuilder()
-                .expireAfterWrite(pendingFutureTimeoutMinutes, TimeUnit.MINUTES)
-                .removalListener(new TimeoutFuture())
-                .build();
+    private Map<Long, ClusterMessage> pendingResponses = Maps.newConcurrentMap();
 
     // Cache of SMaps used for backup data.  each SMap contain device flow table
     private LoadingCache<DeviceId, SMap<FlowId, ImmutableList<StoredFlowEntry>>> smaps;
@@ -352,15 +340,35 @@ public class DistributedFlowRuleStore
 
     @Override
     public void storeFlowRule(FlowRule rule) {
-        storeBatch(new FlowRuleBatchOperation(Arrays.asList(new FlowRuleBatchEntry(FlowRuleOperation.ADD, rule))));
+        storeBatch(new FlowRuleBatchOperation(
+                Arrays.asList(new FlowRuleBatchEntry(FlowRuleOperation.ADD, rule)),
+                rule.deviceId(), 0));
+    }
+
+    //TODO: use this method to complete operations.
+    private void completeOperation(FlowRuleBatchOperation operation,
+                                   boolean isSuccess,
+                                   Optional<Set<FlowRuleBatchEntry>> ops,
+                                   Optional<Set<FlowRule>> failures) {
+        Set<FlowRuleBatchEntry> entries = ops.orElse(Collections.emptySet());
+        Set<FlowRule> failed = failures.orElse(Collections.emptySet());
+        notifyDelegate(FlowRuleBatchEvent.completed(
+                new FlowRuleBatchRequest(operation.id(), entries),
+                new CompletedBatchOperation(isSuccess, failed,
+                                            operation.deviceId())));
     }
 
     @Override
-    public Future<CompletedBatchOperation> storeBatch(FlowRuleBatchOperation operation) {
+    public void storeBatch(FlowRuleBatchOperation operation) {
+
 
         if (operation.getOperations().isEmpty()) {
-            return Futures.immediateFuture(new CompletedBatchOperation(true,
-                                                                       Collections.<FlowRule>emptySet()));
+
+            notifyDelegate(FlowRuleBatchEvent.completed(
+                    new FlowRuleBatchRequest(operation.id(), Collections.emptySet()),
+                    new CompletedBatchOperation(true, Collections.emptySet(),
+                                                operation.deviceId())));
+            return;
         }
 
         DeviceId deviceId = operation.getOperations().get(0).target().deviceId();
@@ -369,14 +377,21 @@ public class DistributedFlowRuleStore
 
         if (!replicaInfo.master().isPresent()) {
             log.warn("Failed to storeBatch: No master for {}", deviceId);
-            // TODO: revisit if this should be "success" from Future point of view
-            // with every FlowEntry failed
-            return Futures.immediateFailedFuture(new IOException("Failed to storeBatch: No master for " + deviceId));
+
+            Set<FlowRule> allFailures = operation.getOperations().stream()
+                                            .map(op -> op.getTarget())
+                                            .collect(Collectors.toSet());
+
+            notifyDelegate(FlowRuleBatchEvent.completed(
+                    new FlowRuleBatchRequest(operation.id(), Collections.emptySet()),
+                    new CompletedBatchOperation(false, allFailures, operation.deviceId())));
+            return;
         }
 
         final NodeId local = clusterService.getLocalNode().id();
         if (replicaInfo.master().get().equals(local)) {
-            return storeBatchInternal(operation);
+            storeBatchInternal(operation);
+            return;
         }
 
         log.trace("Forwarding storeBatch to {}, which is the primary (master) for device {}",
@@ -387,92 +402,104 @@ public class DistributedFlowRuleStore
                 APPLY_BATCH_FLOWS,
                 SERIALIZER.encode(operation));
 
+        CompletedBatchOperation response;
         try {
             ListenableFuture<byte[]> responseFuture =
                     clusterCommunicator.sendAndReceive(message, replicaInfo.master().get());
-            return Futures.transform(responseFuture, new DecodeTo<CompletedBatchOperation>(SERIALIZER));
-        } catch (IOException e) {
-            return Futures.immediateFailedFuture(e);
+            response =
+                    Futures.transform(responseFuture,
+                                      new DecodeTo<CompletedBatchOperation>(SERIALIZER))
+                    .get(500 * operation.size(), TimeUnit.MILLISECONDS);
+
+        } catch (IOException | InterruptedException | ExecutionException | TimeoutException e) {
+            log.warn("Failed to storeBatch: {}", e.getMessage());
+
+            Set<FlowRule> allFailures = operation.getOperations().stream()
+                    .map(op -> op.getTarget())
+                    .collect(Collectors.toSet());
+
+            notifyDelegate(FlowRuleBatchEvent.completed(
+                    new FlowRuleBatchRequest(operation.id(), Collections.emptySet()),
+                    new CompletedBatchOperation(false, allFailures, deviceId)));
+            return;
         }
+
+        notifyDelegate(FlowRuleBatchEvent.completed(
+                new FlowRuleBatchRequest(operation.id(), Collections.emptySet()), response));
+
+
     }
 
-    private ListenableFuture<CompletedBatchOperation>
-                        storeBatchInternal(FlowRuleBatchOperation operation) {
+    private void storeBatchInternal(FlowRuleBatchOperation operation) {
 
-        final List<FlowRuleBatchEntry> toRemove = new ArrayList<>();
-        final List<FlowRuleBatchEntry> toAdd = new ArrayList<>();
-        DeviceId did = null;
-
+        final DeviceId did = operation.deviceId();
+        final Collection<StoredFlowEntry> ft = flowEntries.get(did);
+        Set<FlowRuleBatchEntry> currentOps;
 
         flowEntriesLock.writeLock().lock();
         try {
-            for (FlowRuleBatchEntry batchEntry : operation.getOperations()) {
-                FlowRule flowRule = batchEntry.target();
-                FlowRuleOperation op = batchEntry.operator();
-                if (did == null) {
-                    did = flowRule.deviceId();
-                }
-                if (op.equals(FlowRuleOperation.REMOVE)) {
-                    StoredFlowEntry entry = getFlowEntryInternal(flowRule);
-                    if (entry != null) {
-                        entry.setState(FlowEntryState.PENDING_REMOVE);
-                        toRemove.add(batchEntry);
+            currentOps = operation.getOperations().stream().map(
+                    op -> {
+                        StoredFlowEntry entry;
+                        switch (op.getOperator()) {
+                            case ADD:
+                                entry = new DefaultFlowEntry(op.getTarget());
+                                ft.remove(entry);
+                                ft.add(entry);
+                                return op;
+                            case REMOVE:
+                                entry = getFlowEntryInternal(op.getTarget());
+                                if (entry != null) {
+                                    entry.setState(FlowEntryState.PENDING_REMOVE);
+                                    return op;
+                                }
+                                break;
+                            case MODIFY:
+                                //TODO: figure this out at some point
+                                break;
+                            default:
+                                log.warn("Unknown flow operation operator: {}", op.getOperator());
+                        }
+                        return null;
                     }
-                } else if (op.equals(FlowRuleOperation.ADD)) {
-                    StoredFlowEntry flowEntry = new DefaultFlowEntry(flowRule);
-                    DeviceId deviceId = flowRule.deviceId();
-                    Collection<StoredFlowEntry> ft = flowEntries.get(deviceId);
-
-                    // always add requested FlowRule
-                    // Note: 2 equal FlowEntry may have different treatment
-                    ft.remove(flowEntry);
-                    ft.add(flowEntry);
-                    toAdd.add(batchEntry);
-                }
+            ).filter(op -> op != null).collect(Collectors.toSet());
+            if (currentOps.isEmpty()) {
+                notifyDelegate(FlowRuleBatchEvent.completed(
+                        new FlowRuleBatchRequest(operation.id(), Collections.emptySet()),
+                        new CompletedBatchOperation(true, Collections.emptySet(), did)));
+                return;
             }
-            if (toAdd.isEmpty() && toRemove.isEmpty()) {
-                return Futures.immediateFuture(new CompletedBatchOperation(true, Collections.<FlowRule>emptySet()));
-            }
-
-            // create remote backup copies
-            updateBackup(did, toAdd, toRemove);
+            updateBackup(did, currentOps);
         } finally {
             flowEntriesLock.writeLock().unlock();
         }
 
-        SettableFuture<CompletedBatchOperation> r = SettableFuture.create();
-        final int batchId = localBatchIdGen.incrementAndGet();
+        notifyDelegate(FlowRuleBatchEvent.requested(new
+                    FlowRuleBatchRequest(operation.id(), currentOps), operation.deviceId()));
 
-        pendingFutures.put(batchId, r);
-        notifyDelegate(FlowRuleBatchEvent.requested(new FlowRuleBatchRequest(batchId, toAdd, toRemove)));
-
-        return r;
     }
 
-    private void updateBackup(final DeviceId deviceId,
-                              final List<FlowRuleBatchEntry> toAdd,
-                              final List<FlowRuleBatchEntry> list) {
-
-        Future<?> submit = backupExecutors.submit(new UpdateBackup(deviceId, toAdd, list));
+    private void updateBackup(DeviceId deviceId, final Set<FlowRuleBatchEntry> entries) {
+        Future<?> backup = backupExecutors.submit(new UpdateBackup(deviceId, entries));
 
         if (syncBackup) {
             // wait for backup to complete
             try {
-                submit.get();
+                backup.get();
             } catch (InterruptedException | ExecutionException e) {
                 log.error("Failed to create backups", e);
             }
         }
     }
 
-    private void updateBackup(DeviceId deviceId, List<FlowRuleBatchEntry> toAdd) {
-
-        updateBackup(deviceId, toAdd, Collections.<FlowRuleBatchEntry>emptyList());
-    }
-
     @Override
     public void deleteFlowRule(FlowRule rule) {
-        storeBatch(new FlowRuleBatchOperation(Arrays.asList(new FlowRuleBatchEntry(FlowRuleOperation.REMOVE, rule))));
+        storeBatch(
+                new FlowRuleBatchOperation(
+                        Arrays.asList(
+                                new FlowRuleBatchEntry(
+                                        FlowRuleOperation.REMOVE,
+                                        rule)), rule.deviceId(), 0));
     }
 
     @Override
@@ -503,7 +530,7 @@ public class DistributedFlowRuleStore
                     stored.setState(FlowEntryState.ADDED);
                     FlowRuleBatchEntry entry =
                             new FlowRuleBatchEntry(FlowRuleOperation.ADD, stored);
-                    updateBackup(did, Arrays.asList(entry));
+                    updateBackup(did, Sets.newHashSet(entry));
                     return new FlowRuleEvent(Type.RULE_ADDED, rule);
                 }
                 return new FlowRuleEvent(Type.RULE_UPDATED, rule);
@@ -561,7 +588,7 @@ public class DistributedFlowRuleStore
             final boolean removed = flowEntries.remove(deviceId, rule);
             FlowRuleBatchEntry entry =
                     new FlowRuleBatchEntry(FlowRuleOperation.REMOVE, rule);
-            updateBackup(deviceId, Collections.<FlowRuleBatchEntry>emptyList(), Arrays.asList(entry));
+            updateBackup(deviceId, Sets.newHashSet(entry));
             if (removed) {
                 return new FlowRuleEvent(RULE_REMOVED, rule);
             } else {
@@ -574,14 +601,16 @@ public class DistributedFlowRuleStore
 
     @Override
     public void batchOperationComplete(FlowRuleBatchEvent event) {
-        final Integer batchId = event.subject().batchId();
-        SettableFuture<CompletedBatchOperation> future
-            = pendingFutures.getIfPresent(batchId);
-        if (future != null) {
-            future.set(event.result());
-            pendingFutures.invalidate(batchId);
+        ClusterMessage message = pendingResponses.remove(event.subject().batchId());
+        if (message == null) {
+          notifyDelegate(event);
+        } else {
+            try {
+                message.respond(SERIALIZER.encode(event.result()));
+            } catch (IOException e) {
+                log.warn("Failed to respond to peer for batch operation result");
+            }
         }
-        notifyDelegate(event);
     }
 
     private void loadFromBackup(final DeviceId did) {
@@ -617,16 +646,6 @@ public class DistributedFlowRuleStore
         log.trace("removedFromPrimary {}", removed);
     }
 
-    private static final class TimeoutFuture
-        implements RemovalListener<Integer, SettableFuture<CompletedBatchOperation>> {
-        @Override
-        public void onRemoval(RemovalNotification<Integer, SettableFuture<CompletedBatchOperation>> notification) {
-            // wrapping in ExecutionException to support Future.get
-            notification.getValue()
-                .setException(new ExecutionException("Timed out",
-                                                     new TimeoutException()));
-        }
-    }
 
     private final class OnStoreBatch implements ClusterMessageHandler {
         private final NodeId local;
@@ -648,7 +667,7 @@ public class DistributedFlowRuleStore
                 for (FlowRuleBatchEntry op : operation.getOperations()) {
                     failures.add(op.target());
                 }
-                CompletedBatchOperation allFailed = new CompletedBatchOperation(false, failures);
+                CompletedBatchOperation allFailed = new CompletedBatchOperation(false, failures, deviceId);
                 // This node is no longer the master, respond as all failed.
                 // TODO: we might want to wrap response in envelope
                 // to distinguish sw programming failure and hand over
@@ -661,31 +680,10 @@ public class DistributedFlowRuleStore
                 return;
             }
 
-            final ListenableFuture<CompletedBatchOperation> f = storeBatchInternal(operation);
 
-            f.addListener(new Runnable() {
+            pendingResponses.put(operation.id(), message);
+            storeBatchInternal(operation);
 
-                @Override
-                public void run() {
-                    CompletedBatchOperation result;
-                    try {
-                        result = f.get();
-                    } catch (InterruptedException | ExecutionException e) {
-                        log.error("Batch operation failed", e);
-                        // create everything failed response
-                        Set<FlowRule> failures = new HashSet<>(operation.size());
-                        for (FlowRuleBatchEntry op : operation.getOperations()) {
-                            failures.add(op.target());
-                        }
-                        result = new CompletedBatchOperation(false, failures);
-                    }
-                    try {
-                        message.respond(SERIALIZER.encode(result));
-                    } catch (IOException e) {
-                        log.error("Failed to respond back", e);
-                    }
-                }
-            }, futureListeners);
         }
     }
 
@@ -731,73 +729,54 @@ public class DistributedFlowRuleStore
     }
 
     // Task to update FlowEntries in backup HZ store
-    // TODO: Should be refactored to contain only one list and not
-    //      toAdd and toRemove
     private final class UpdateBackup implements Runnable {
 
         private final DeviceId deviceId;
-        private final List<FlowRuleBatchEntry> toAdd;
-        private final List<FlowRuleBatchEntry> toRemove;
+        private final Set<FlowRuleBatchEntry> ops;
+
 
         public UpdateBackup(DeviceId deviceId,
-                             List<FlowRuleBatchEntry> toAdd,
-                             List<FlowRuleBatchEntry> list) {
+                             Set<FlowRuleBatchEntry> ops) {
             this.deviceId = checkNotNull(deviceId);
-            this.toAdd = checkNotNull(toAdd);
-            this.toRemove = checkNotNull(list);
+            this.ops = checkNotNull(ops);
+
         }
 
         @Override
         public void run() {
             try {
-                log.trace("update backup {} +{} -{}", deviceId, toAdd, toRemove);
+                log.trace("update backup {} {}", deviceId, ops
+                );
                 final SMap<FlowId, ImmutableList<StoredFlowEntry>> backupFlowTable = smaps.get(deviceId);
-                // Following should be rewritten using async APIs
-                for (FlowRuleBatchEntry bEntry : toAdd) {
-                    final FlowRule entry = bEntry.target();
-                    final FlowId id = entry.id();
-                    ImmutableList<StoredFlowEntry> original = backupFlowTable.get(id);
-                    List<StoredFlowEntry> list = new ArrayList<>();
-                    if (original != null) {
-                        list.addAll(original);
-                    }
 
-                    list.remove(bEntry.target());
-                    list.add((StoredFlowEntry) entry);
 
-                    ImmutableList<StoredFlowEntry> newValue = ImmutableList.copyOf(list);
-                    boolean success;
-                    if (original == null) {
-                        success = (backupFlowTable.putIfAbsent(id, newValue) == null);
-                    } else {
-                        success = backupFlowTable.replace(id, original, newValue);
-                    }
-                    if (!success) {
-                        log.error("Updating backup failed.");
-                    }
-                }
-                for (FlowRuleBatchEntry bEntry : toRemove) {
-                    final FlowRule entry = bEntry.target();
-                    final FlowId id = entry.id();
-                    ImmutableList<StoredFlowEntry> original = backupFlowTable.get(id);
-                    List<StoredFlowEntry> list = new ArrayList<>();
-                    if (original != null) {
-                        list.addAll(original);
-                    }
+                ops.stream().forEach(
+                        op -> {
+                            final FlowRule entry = op.getTarget();
+                            final FlowId id = entry.id();
+                            ImmutableList<StoredFlowEntry> original = backupFlowTable.get(id);
+                            List<StoredFlowEntry> list = new ArrayList<>();
+                            if (original != null) {
+                                list.addAll(original);
+                            }
+                            list.remove(op.getTarget());
+                            if (op.getOperator() == FlowRuleOperation.ADD) {
+                                list.add((StoredFlowEntry) entry);
+                            }
 
-                    list.remove(bEntry.target());
+                            ImmutableList<StoredFlowEntry> newValue = ImmutableList.copyOf(list);
+                            boolean success;
+                            if (original == null) {
+                                success = (backupFlowTable.putIfAbsent(id, newValue) == null);
+                            } else {
+                                success = backupFlowTable.replace(id, original, newValue);
+                            }
+                            if (!success) {
+                                log.error("Updating backup failed.");
+                            }
 
-                    ImmutableList<StoredFlowEntry> newValue = ImmutableList.copyOf(list);
-                    boolean success;
-                    if (original == null) {
-                        success = (backupFlowTable.putIfAbsent(id, newValue) == null);
-                    } else {
-                        success = backupFlowTable.replace(id, original, newValue);
-                    }
-                    if (!success) {
-                        log.error("Updating backup failed.");
-                    }
-                }
+                        }
+                );
             } catch (ExecutionException e) {
                 log.error("Failed to write to backups", e);
             }

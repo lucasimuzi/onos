@@ -15,12 +15,28 @@
  */
 package org.onosproject.net.flow;
 
+import org.onosproject.net.DeviceId;
+
 import java.util.Collection;
 
 public class FlowRuleBatchOperation
     extends BatchOperation<FlowRuleBatchEntry> {
 
-    public FlowRuleBatchOperation(Collection<FlowRuleBatchEntry> operations) {
+    private final long id;
+    private final DeviceId deviceId;
+
+    public FlowRuleBatchOperation(Collection<FlowRuleBatchEntry> operations,
+                                  DeviceId deviceId, long flowOperationId) {
         super(operations);
+        this.id = flowOperationId;
+        this.deviceId = deviceId;
+    }
+
+    public DeviceId deviceId() {
+        return this.deviceId;
+    }
+
+    public long id() {
+        return id;
     }
 }

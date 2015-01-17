@@ -17,7 +17,6 @@ package org.onosproject.provider.nil.flow.impl;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
-import com.google.common.util.concurrent.Futures;
 import org.apache.felix.scr.annotations.Activate;
 import org.apache.felix.scr.annotations.Component;
 import org.apache.felix.scr.annotations.Deactivate;
@@ -29,12 +28,12 @@ import org.jboss.netty.util.TimerTask;
 import org.onlab.util.Timer;
 import org.onosproject.core.ApplicationId;
 import org.onosproject.net.DeviceId;
-import org.onosproject.net.flow.BatchOperation;
 import org.onosproject.net.flow.CompletedBatchOperation;
 import org.onosproject.net.flow.DefaultFlowEntry;
 import org.onosproject.net.flow.FlowEntry;
 import org.onosproject.net.flow.FlowRule;
 import org.onosproject.net.flow.FlowRuleBatchEntry;
+import org.onosproject.net.flow.FlowRuleBatchOperation;
 import org.onosproject.net.flow.FlowRuleProvider;
 import org.onosproject.net.flow.FlowRuleProviderRegistry;
 import org.onosproject.net.flow.FlowRuleProviderService;
@@ -43,7 +42,6 @@ import org.onosproject.net.provider.ProviderId;
 import org.slf4j.Logger;
 
 import java.util.Collections;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.slf4j.LoggerFactory.getLogger;
@@ -107,8 +105,8 @@ public class NullFlowRuleProvider extends AbstractProvider implements FlowRulePr
     }
 
     @Override
-    public Future<CompletedBatchOperation> executeBatch(
-            BatchOperation<FlowRuleBatchEntry> batch) {
+    public void executeBatch(
+            FlowRuleBatchOperation batch) {
         for (FlowRuleBatchEntry fbe : batch.getOperations()) {
             switch (fbe.operator()) {
                 case ADD:
@@ -125,8 +123,12 @@ public class NullFlowRuleProvider extends AbstractProvider implements FlowRulePr
                     log.error("Unknown flow operation: {}", fbe);
             }
         }
-        return Futures.immediateFuture(
-                new CompletedBatchOperation(true, Collections.emptySet()));
+
+        providerService.batchOperationCompleted(batch.id(),
+                                                new CompletedBatchOperation(
+                                                        true,
+                                                        Collections.emptySet(),
+                                                        batch.deviceId()));
     }
 
     private class StatisticTask implements TimerTask {
