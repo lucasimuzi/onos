@@ -15,19 +15,6 @@
  */
 package org.onosproject.sdnip;
 
-import static org.easymock.EasyMock.anyObject;
-import static org.easymock.EasyMock.createMock;
-import static org.easymock.EasyMock.expect;
-import static org.easymock.EasyMock.expectLastCall;
-import static org.easymock.EasyMock.replay;
-import static org.easymock.EasyMock.reset;
-import static org.easymock.EasyMock.verify;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -60,7 +47,6 @@ import org.onosproject.net.host.HostService;
 import org.onosproject.net.host.InterfaceIpAddress;
 import org.onosproject.net.intent.AbstractIntentTest;
 import org.onosproject.net.intent.Intent;
-import org.onosproject.net.intent.IntentOperations;
 import org.onosproject.net.intent.IntentService;
 import org.onosproject.net.intent.IntentState;
 import org.onosproject.net.intent.MultiPointToSinglePointIntent;
@@ -71,6 +57,19 @@ import com.google.common.collect.Sets;
 import com.googlecode.concurrenttrees.radix.node.concrete.DefaultByteArrayNodeFactory;
 import com.googlecode.concurrenttrees.radixinverted.ConcurrentInvertedRadixTree;
 import com.googlecode.concurrenttrees.radixinverted.InvertedRadixTree;
+
+import static org.easymock.EasyMock.anyObject;
+import static org.easymock.EasyMock.createMock;
+import static org.easymock.EasyMock.expect;
+import static org.easymock.EasyMock.expectLastCall;
+import static org.easymock.EasyMock.replay;
+import static org.easymock.EasyMock.reset;
+import static org.easymock.EasyMock.verify;
+import static org.hamcrest.Matchers.is;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 /**
  * This class tests the intent synchronization function in the
@@ -343,19 +342,13 @@ public class IntentSyncTest extends AbstractIntentTest {
                 .andReturn(IntentState.WITHDRAWING).anyTimes();
         expect(intentService.getIntents()).andReturn(intents).anyTimes();
 
-        IntentOperations.Builder builder = IntentOperations.builder(APPID);
-        builder.addWithdrawOperation(intent2.id());
-        builder.addWithdrawOperation(intent4.id());
-        intentService.execute(TestIntentServiceHelper.eqExceptId(
-                                builder.build()));
+        intentService.withdraw(intent2);
+        intentService.withdraw(intent4);
 
-        builder = IntentOperations.builder(APPID);
-        builder.addSubmitOperation(intent3);
-        builder.addSubmitOperation(intent4Update);
-        builder.addSubmitOperation(intent6);
-        builder.addSubmitOperation(intent7);
-        intentService.execute(TestIntentServiceHelper.eqExceptId(
-                                builder.build()));
+        intentService.submit(intent3);
+        intentService.submit(intent4Update);
+        intentService.submit(intent6);
+        intentService.submit(intent7);
         replay(intentService);
 
         // Start the test

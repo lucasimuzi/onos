@@ -59,7 +59,6 @@ import org.onosproject.net.host.HostService;
 import org.onosproject.net.host.InterfaceIpAddress;
 import org.onosproject.net.intent.AbstractIntentTest;
 import org.onosproject.net.intent.Intent;
-import org.onosproject.net.intent.IntentOperations;
 import org.onosproject.net.intent.IntentService;
 import org.onosproject.net.intent.MultiPointToSinglePointIntent;
 import org.onosproject.net.provider.ProviderId;
@@ -219,10 +218,7 @@ public class RouterAsyncArpTest extends AbstractIntentTest {
         replay(hostService);
 
         reset(intentService);
-        IntentOperations.Builder builder = IntentOperations.builder(APPID);
-        builder.addSubmitOperation(intent);
-        intentService.execute(TestIntentServiceHelper.eqExceptId(
-                                builder.build()));
+        intentService.submit(intent);
         replay(intentService);
 
         // Call the processRouteUpdates() method in Router class
@@ -309,14 +305,8 @@ public class RouterAsyncArpTest extends AbstractIntentTest {
         replay(hostService);
 
         reset(intentService);
-        IntentOperations.Builder builder = IntentOperations.builder(APPID);
-        builder.addWithdrawOperation(intent.id());
-        intentService.execute(TestIntentServiceHelper.eqExceptId(
-                                builder.build()));
-        builder = IntentOperations.builder(APPID);
-        builder.addSubmitOperation(intentNew);
-        intentService.execute(TestIntentServiceHelper.eqExceptId(
-                                builder.build()));
+        intentService.withdraw(intent);
+        intentService.submit(intentNew);
         replay(intentService);
 
         // Call the processRouteUpdates() method in Router class
@@ -369,10 +359,7 @@ public class RouterAsyncArpTest extends AbstractIntentTest {
 
         // Set up expectation
         reset(intentService);
-        IntentOperations.Builder builder = IntentOperations.builder(APPID);
-        builder.addWithdrawOperation(intent.id());
-        intentService.execute(TestIntentServiceHelper.eqExceptId(
-                                builder.build()));
+        intentService.withdraw(intent);
         replay(intentService);
 
         // Call the processRouteUpdates() method in Router class

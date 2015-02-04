@@ -44,7 +44,6 @@ import org.onosproject.net.intent.Constraint;
 import org.onosproject.net.intent.HostToHostIntent;
 import org.onosproject.net.intent.Intent;
 import org.onosproject.net.intent.IntentBatchService;
-import org.onosproject.net.intent.IntentOperations;
 import org.onosproject.net.intent.IntentService;
 import org.slf4j.Logger;
 
@@ -272,7 +271,7 @@ public class DemoInstaller implements DemoAPI {
                     shutdownAndAwaitTermination(randomWorker);
                 }
             }
-            //if everyting is good proceed.
+            //if everything is good proceed.
             if (!randomWorker.isShutdown()) {
                 randomWorker.execute(this);
             }
@@ -307,23 +306,19 @@ public class DemoInstaller implements DemoAPI {
         }
 
         private void installIntents(List<HostPair> toInstall) {
-            IntentOperations.Builder builder = IntentOperations.builder(appId);
             for (HostPair pair : toInstall) {
                 installed.add(pair);
                 uninstalledOrWithdrawn.remove(pair);
-                builder.addSubmitOperation(pair.h2hIntent());
+                intentService.submit(pair.h2hIntent());
             }
-            intentBatchService.addIntentOperations(builder.build());
         }
 
         private void uninstallIntents(Collection<HostPair> toRemove) {
-            IntentOperations.Builder builder = IntentOperations.builder(appId);
             for (HostPair pair : toRemove) {
                 installed.remove(pair);
                 uninstalledOrWithdrawn.add(pair);
-                builder.addWithdrawOperation(pair.h2hIntent().id());
+                intentService.withdraw(pair.h2hIntent());
             }
-            intentBatchService.addIntentOperations(builder.build());
         }
 
         /**
@@ -332,11 +327,9 @@ public class DemoInstaller implements DemoAPI {
         private void cleanUp() {
             List<HostPair> allPairs = Lists.newArrayList(installed);
             allPairs.addAll(uninstalledOrWithdrawn);
-            IntentOperations.Builder builder = IntentOperations.builder(appId);
             for (HostPair pair : allPairs) {
-                builder.addWithdrawOperation(pair.h2hIntent().id());
+                intentService.withdraw(pair.h2hIntent());
             }
-            intentBatchService.addIntentOperations(builder.build());
         }
 
 

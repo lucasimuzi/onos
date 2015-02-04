@@ -34,7 +34,6 @@ import org.onosproject.core.ApplicationId;
 import org.onosproject.net.flow.criteria.Criteria.IPCriterion;
 import org.onosproject.net.flow.criteria.Criterion;
 import org.onosproject.net.intent.Intent;
-import org.onosproject.net.intent.IntentOperations;
 import org.onosproject.net.intent.IntentService;
 import org.onosproject.net.intent.IntentState;
 import org.onosproject.net.intent.MultiPointToSinglePointIntent;
@@ -231,14 +230,10 @@ public class IntentSynchronizer {
             // Push the intents
             if (isElectedLeader && isActivatedLeader) {
                 log.debug("SDN-IP Submitting all Peer Intents...");
-                IntentOperations.Builder builder = IntentOperations.builder(appId);
                 for (Intent intent : intents) {
-                    builder.addSubmitOperation(intent);
+                    log.trace("SDN-IP Submitting intents: {}", intent);
+                    intentService.submit(intent);
                 }
-                IntentOperations intentOperations = builder.build();
-                log.trace("SDN-IP Submitting intents: {}",
-                          intentOperations.operations());
-                intentService.execute(intentOperations);
             }
         }
     }
@@ -267,8 +262,6 @@ public class IntentSynchronizer {
             //
             // Prepare the Intent batch operations for the intents to withdraw
             //
-            IntentOperations.Builder withdrawBuilder =
-                IntentOperations.builder(appId);
             for (IpPrefix prefix : withdrawPrefixes) {
                 intent = routeIntents.remove(prefix);
                 if (intent == null) {
@@ -278,15 +271,13 @@ public class IntentSynchronizer {
                 }
                 if (isElectedLeader && isActivatedLeader) {
                     log.trace("SDN-IP Withdrawing intent: {}", intent);
-                    withdrawBuilder.addWithdrawOperation(intent.id());
+                    intentService.withdraw(intent);
                 }
             }
 
             //
             // Prepare the Intent batch operations for the intents to submit
             //
-            IntentOperations.Builder submitBuilder =
-                IntentOperations.builder(appId);
             for (Pair<IpPrefix, MultiPointToSinglePointIntent> pair :
                      submitIntents) {
                 IpPrefix prefix = pair.getLeft();
@@ -297,26 +288,8 @@ public class IntentSynchronizer {
                     if (oldIntent != null) {
                         log.trace("SDN-IP Withdrawing old intent: {}",
                                   oldIntent);
-                        withdrawBuilder.addWithdrawOperation(oldIntent.id());
+                        intentService.withdraw(oldIntent);
                     }
-                    log.trace("SDN-IP Submitting intent: {}", intent);
-                    submitBuilder.addSubmitOperation(intent);
-                }
-            }
-
-            //
-            // Submit the Intent operations
-            //
-            if (isElectedLeader && isActivatedLeader) {
-                IntentOperations intentOperations = withdrawBuilder.build();
-                if (!intentOperations.operations().isEmpty()) {
-                    log.debug("SDN-IP Withdrawing intents executed");
-                    intentService.execute(intentOperations);
-                }
-                intentOperations = submitBuilder.build();
-                if (!intentOperations.operations().isEmpty()) {
-                    log.debug("SDN-IP Submitting intents executed");
-                    intentService.execute(intentOperations);
                 }
             }
         }
@@ -334,7 +307,6 @@ public class IntentSynchronizer {
             Collection<Intent> storeInMemoryIntents = new LinkedList<>();
             Collection<Intent> addIntents = new LinkedList<>();
             Collection<Intent> deleteIntents = new LinkedList<>();
-            IntentOperations intentOperations;
 
             if (!isElectedLeader) {
                 return;         // Nothing to do: not the leader anymore
@@ -413,9 +385,8 @@ public class IntentSynchronizer {
             }
 
             // Withdraw Intents
-            IntentOperations.Builder builder = IntentOperations.builder(appId);
             for (Intent intent : deleteIntents) {
-                builder.addWithdrawOperation(intent.id());
+                intentService.withdraw(intent);
                 log.trace("SDN-IP Intent Synchronizer: withdrawing intent: {}",
                       intent);
             }
@@ -425,13 +396,10 @@ public class IntentSynchronizer {
                 isActivatedLeader = false;
                 return;
             }
-            intentOperations = builder.build();
-            intentService.execute(intentOperations);
 
             // Add Intents
-            builder = IntentOperations.builder(appId);
             for (Intent intent : addIntents) {
-                builder.addSubmitOperation(intent);
+                intentService.submit(intent);
                 log.trace("SDN-IP Intent Synchronizer: submitting intent: {}",
                           intent);
             }
@@ -441,8 +409,6 @@ public class IntentSynchronizer {
                 isActivatedLeader = false;
                 return;
             }
-            intentOperations = builder.build();
-            intentService.execute(intentOperations);
 
             if (isElectedLeader) {
                 isActivatedLeader = true;       // Allow push of Intents
