@@ -258,19 +258,9 @@ public class DemoInstaller implements DemoAPI {
          * @throws InterruptedException if the thread go interupted
          */
         private void trackIntents() throws InterruptedException {
-            int count = 0;
-            while (!latch.await(100, TimeUnit.NANOSECONDS)) {
-                if (intentBatchService.getPendingOperations().isEmpty()) {
-                    latch.countDown();
-                }
-                count++;
-                if (count > ITERATIONMAX) {
-                    log.warn("A batch is stuck processing. " +
-                                     "pending : {}",
-                             intentBatchService.getPendingOperations());
-                    shutdownAndAwaitTermination(randomWorker);
-                }
-            }
+            // TODO generate keys fr each set of intents to allow manager to throttle
+            // TODO may also look into the store to see how many operations are pending
+
             //if everything is good proceed.
             if (!randomWorker.isShutdown()) {
                 randomWorker.execute(this);
